@@ -1,11 +1,6 @@
 import type { BaseItemDto } from '@jellyfin/sdk/lib/generated-client/models/base-item-dto';
-import { BaseItemKind } from '@jellyfin/sdk/lib/generated-client/models/base-item-kind';
 import { ImageType } from '@jellyfin/sdk/lib/generated-client/models/image-type';
 import { ItemFields } from '@jellyfin/sdk/lib/generated-client/models/item-fields';
-import { ItemFilter } from '@jellyfin/sdk/lib/generated-client/models/item-filter';
-import { ItemSortBy } from '@jellyfin/sdk/lib/generated-client/models/item-sort-by';
-import { SortOrder } from '@jellyfin/sdk/lib/generated-client/models/sort-order';
-import { getItemsApi } from '@jellyfin/sdk/lib/utils/api/items-api';
 import type { ApiClient } from 'jellyfin-apiclient';
 
 import { getNextUpQuery } from 'apps/legacy/features/libraries/api/useNextUp';
@@ -70,44 +65,24 @@ function getItemsFn(
             enableRewatching: userSettings.enableRewatchingInNextUp()
         }));
 
-        // Next up items expose no date to sort by client-side (their sort key is the
-        // predecessor's last-played date, which only the server knows), so look the
-        // date up from the user's recently played episodes instead. Series whose last
-        // played episode is older than this window keep their next up list order.
-        const recentlyPlayed = getItemsApi(api).getItems({
-            userId,
-            recursive: true,
-            includeItemTypes: [ BaseItemKind.Episode ],
-            filters: [ ItemFilter.IsPlayed ],
-            sortBy: [ ItemSortBy.DatePlayed ],
-            sortOrder: [ SortOrder.Descending ],
-            limit: 100,
-            enableImages: false,
-            enableTotalRecordCount: false
-        }).then(response => response.data);
-
-        return Promise.all([ resumeItems, nextUpItems, recentlyPlayed ])
-            .then(([ resumeResult, nextUpResult, playedResult ]) => {
-                const lastPlayedBySeries = new Map<string, string>();
-                for (const episode of playedResult.Items ?? []) {
-                    const date = episode.UserData?.LastPlayedDate;
-                    if (episode.SeriesId && date && !lastPlayedBySeries.has(episode.SeriesId)) {
-                        lastPlayedBySeries.set(episode.SeriesId, date);
+        return Promise.all([ resumeItems, nextUpItems ])
+            .then(([ resumeResult, nextUpResult ]) => {
+                // Both lists are sorted by recency, but next up items expose no date to
+                // merge by client-side (their sort key is the predecessor's last-played
+                // date, which only the server knows). Interleaving the two lists keeps
+                // recently watched series near the front instead of stacking every next
+                // up item behind the full resume list.
+                const resume = resumeResult.Items ?? [];
+                const nextUp = nextUpResult.Items ?? [];
+                const merged: typeof resume = [];
+                for (let i = 0; i < Math.max(resume.length, nextUp.length); i++) {
+                    if (i < resume.length) {
+                        merged.push(resume[i]);
+                    }
+                    if (i < nextUp.length) {
+                        merged.push(nextUp[i]);
                     }
                 }
-
-                const activityDate = (item: BaseItemDto) => {
-                    const date = item.UserData?.LastPlayedDate
-                        ?? (item.SeriesId ? lastPlayedBySeries.get(item.SeriesId) : undefined);
-                    const parsed = date ? Date.parse(date) : Number.NaN;
-                    return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
-                };
-
-                const merged = [ ...(resumeResult.Items ?? []), ...(nextUpResult.Items ?? []) ]
-                    .map((item, index) => ({ item, index, date: activityDate(item) }))
-                    .sort((a, b) => (b.date - a.date) || (a.index - b.index))
-                    .map(entry => entry.item);
-
                 return { Items: merged };
             });
     };
