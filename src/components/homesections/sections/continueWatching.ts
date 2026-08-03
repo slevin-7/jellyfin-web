@@ -66,12 +66,25 @@ function getItemsFn(
         }));
 
         return Promise.all([ resumeItems, nextUpItems ])
-            .then(([ resumeResult, nextUpResult ]) => ({
-                Items: [
-                    ...(resumeResult.Items ?? []),
-                    ...(nextUpResult.Items ?? [])
-                ]
-            }));
+            .then(([ resumeResult, nextUpResult ]) => {
+                // Both lists are sorted by recency, but next up items expose no date to
+                // merge by client-side (their sort key is the predecessor's last-played
+                // date, which only the server knows). Interleaving the two lists keeps
+                // recently watched series near the front instead of stacking every next
+                // up item behind the full resume list.
+                const resume = resumeResult.Items ?? [];
+                const nextUp = nextUpResult.Items ?? [];
+                const merged: typeof resume = [];
+                for (let i = 0; i < Math.max(resume.length, nextUp.length); i++) {
+                    if (i < resume.length) {
+                        merged.push(resume[i]);
+                    }
+                    if (i < nextUp.length) {
+                        merged.push(nextUp[i]);
+                    }
+                }
+                return { Items: merged };
+            });
     };
 }
 
